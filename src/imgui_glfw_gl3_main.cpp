@@ -344,8 +344,20 @@ void MainAppUpdate() {
 
 	if (ImGui::TreeNode("Bad Seeds"))
 	{
-		for (uint64_t RNGSeed : AC.BadRNGSeeds)
+		if (ImGui::Button("Print out current bad seeds"))
 		{
+			for (uint64_t BadSeed : AC.BadRNGSeeds)
+			{
+				char Buff[256] = {};
+				snprintf(Buff, sizeof(Buff), "Bad seed: %llu\n", BadSeed);
+				OutputDebugStringA(Buff);
+			}
+		}
+
+		for (auto Iter = AC.BadRNGSeeds.begin(); Iter != AC.BadRNGSeeds.end(); )
+		{
+			uint64_t RNGSeed = *Iter;
+
 			char Buff[256] = {};
 			snprintf(Buff, sizeof(Buff), "REPRO##%llu", RNGSeed);
 			if (ImGui::Button(Buff))
@@ -356,6 +368,17 @@ void MainAppUpdate() {
 
 			ImGui::SameLine();
 			ImGui::Text("Bad Seed: %llu", RNGSeed);
+			ImGui::SameLine();
+
+			snprintf(Buff, sizeof(Buff), "Remove##%llu", RNGSeed);
+			if (ImGui::Button(Buff))
+			{
+				Iter = AC.BadRNGSeeds.erase(Iter);
+			}
+			else
+			{
+				Iter++;
+			}
 		}
 
 		ImGui::TreePop();
