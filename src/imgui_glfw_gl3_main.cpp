@@ -240,6 +240,8 @@ void MainAppUpdate() {
 
 	ImGui::DragInt("Seed", &AC.RNGSeed);
 
+	ImGui::Text("WARNING: Running 'Continuous Fuzz' may lead to rapidly changing noise patterns (probably ~20-30 Hz, but up to your monitor's refresh rate).");
+	ImGui::Text("You can hit 'Single Fuzz' a couple times to see what the output is like");
 	ImGui::Checkbox("Continuous Fuzz", &AC.ContinuousFuzz);
 
 	bool bShouldRegenerateSource = false;
