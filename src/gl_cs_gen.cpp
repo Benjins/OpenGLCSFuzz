@@ -78,6 +78,26 @@ struct Vec4f
 	}
 };
 
+template<int capacity>
+struct StringStackBuffer {
+	char buffer[capacity];
+	int length;
+
+	StringStackBuffer() {
+		buffer[0] = '\0';
+		length = 0;
+	}
+
+	StringStackBuffer(const char* format, ...) {
+		buffer[0] = '\0';
+		length = 0;
+		va_list varArgs;
+		va_start(varArgs, format);
+		length += vsnprintf(buffer, capacity, format, varArgs);
+		va_end(varArgs);
+	}
+};
+
 enum struct GLCSOperationType
 {
 	Add,
@@ -99,10 +119,13 @@ enum struct GLCSValueType
 	VecLiteral
 };
 
+#define MAX_SCRATCH_REGISTER_COUNT 2
 
 struct GLCSValue
 {
 	GLCSValueType Type = GLCSValueType::Scratch;
+
+	int RegIndex = 0;
 
 	Vec4f LiteralValue;
 	int Index1 = 0;
@@ -114,6 +137,8 @@ struct GLCSOperation
 	GLCSOperationType Type = GLCSOperationType::Add;
 	GLCSValue Value1;
 	GLCSValue Value2;
+
+	int RegIndex = 0;
 
 	// Only for if statement
 	struct
@@ -136,6 +161,8 @@ void GenerateGLCSOperations(std::mt19937_64* RNGState, std::vector<GLCSOperation
 	auto GetGLCSValue = [RNGState](bool bCanReadFromOutput)
 	{
 		GLCSValue Value;
+
+		Value.RegIndex = (*RNGState)() % MAX_SCRATCH_REGISTER_COUNT;
 
 		uint64_t Decider = (*RNGState)() % 100;
 
@@ -191,6 +218,8 @@ void GenerateGLCSOperations(std::mt19937_64* RNGState, std::vector<GLCSOperation
 	for (int i = 0; i < NumOps; i++)
 	{
 		GLCSOperation Op;
+
+		Op.RegIndex = (*RNGState)() % MAX_SCRATCH_REGISTER_COUNT;
 
 		uint64_t Decider = (*RNGState)() % 100;
 
@@ -248,7 +277,9 @@ void GenerateGLCSOperations(std::mt19937_64* RNGState, std::vector<GLCSOperation
 		{
 			GLCSOperation Op2;
 			Op2.Type = GLCSOperationType::Mov;
+			Op2.RegIndex = Op.RegIndex;
 			Op2.Value1.Type = GLCSValueType::ReadFromInput;
+			Op2.Value1.RegIndex = Op.RegIndex;
 			Op2.Value1.Index1 = (*RNGState)() % 4;
 			Op2.Value1.Index2 = (*RNGState)() % 4;
 			OutComputeOperations->push_back(Op2);
@@ -259,6 +290,18 @@ void GenerateGLCSOperations(std::mt19937_64* RNGState, std::vector<GLCSOperation
 	{
 		GLCSOperation Op;
 		Op.Type = GLCSOperationType::EndIf;
+		OutComputeOperations->push_back(Op);
+	}
+
+	for (int RegIndex = 1; RegIndex < MAX_SCRATCH_REGISTER_COUNT; RegIndex++)
+	{
+		GLCSOperation Op;
+		Op.RegIndex = 0;
+		Op.Type = GLCSOperationType::Add;
+		Op.Value1.Type = GLCSValueType::Scratch;
+		Op.Value1.RegIndex = 0;
+		Op.Value2.Type = GLCSValueType::Scratch;
+		Op.Value2.RegIndex = RegIndex;
 		OutComputeOperations->push_back(Op);
 	}
 
@@ -305,7 +348,11 @@ void ConvertCSOperationsToComputeShaderSource(const std::vector<GLCSOperation>& 
 	(*OutString) += "void main() {\n";
 
 	(*OutString) += "\tivec2 pxCoords = ivec2(gl_GlobalInvocationID.xy);\n";
-	(*OutString) += "\tvec4 scratch = imageLoad(inImg, pxCoords);\n";
+
+	for (int i = 0; i < MAX_SCRATCH_REGISTER_COUNT; i++)
+	{
+		(*OutString) += StringStackBuffer<256>("\tvec4 scratch%d = imageLoad(inImg, pxCoords);\n", i).buffer;
+	}
 
 	auto ConvertCSValuetoSourceString = [](const GLCSValue& Value)
 	{
@@ -313,12 +360,11 @@ void ConvertCSOperationsToComputeShaderSource(const std::vector<GLCSOperation>& 
 		{
 			// Hmmm...we want this to be based on scratch, but...we need some way of ensuring bounds
 			// Maybe wrap or clamp it? Maybe make a helper function in the generated source?
-			return std::string("sampleFromInputImg(scratch.") + SwizzleStr[Value.Index1] + SwizzleStr[Value.Index2] + ")";
+			return std::string(StringStackBuffer<256>("sampleFromInputImg(scratch%d.%c%c)", Value.RegIndex, SwizzleStr[Value.Index1], SwizzleStr[Value.Index2]).buffer);
 		}
 		else if (Value.Type == GLCSValueType::ReadFromOutput)
 		{
-			//return std::string("sampleFromImg(outImg, ivec2(255 - pxCoords.x, pxCoords.y))");
-			return std::string("imageLoad(outImg, getLocalSafeUVs(scratch.") + SwizzleStr[Value.Index1] + SwizzleStr[Value.Index2] + "))";
+			return std::string(StringStackBuffer<256>("imageLoad(outImg, getLocalSafeUVs(scratch%d.%c%c))", Value.RegIndex, SwizzleStr[Value.Index1], SwizzleStr[Value.Index2]).buffer);
 		}
 		else if (Value.Type == GLCSValueType::ReadFromOutputFixed)
 		{
@@ -326,13 +372,11 @@ void ConvertCSOperationsToComputeShaderSource(const std::vector<GLCSOperation>& 
 		}
 		else if (Value.Type == GLCSValueType::Scratch)
 		{
-			return std::string("scratch");
+			return std::string(StringStackBuffer<256>("scratch%d", Value.RegIndex).buffer);
 		}
 		else if (Value.Type == GLCSValueType::VecLiteral)
 		{
-			char Buffer[256] = {};
-			snprintf(Buffer, sizeof(Buffer), "vec4(%.25f, %.25f, %.25f, %.25f)", Value.LiteralValue.x, Value.LiteralValue.y, Value.LiteralValue.z, Value.LiteralValue.w);
-			return std::string(Buffer);
+			return std::string(StringStackBuffer<256>("vec4(%.25f, %.25f, %.25f, %.25f)", Value.LiteralValue.x, Value.LiteralValue.y, Value.LiteralValue.z, Value.LiteralValue.w).buffer);
 		}
 		else
 		{
@@ -348,20 +392,31 @@ void ConvertCSOperationsToComputeShaderSource(const std::vector<GLCSOperation>& 
 	{
 		if (Op.Type == GLCSOperationType::Add)
 		{
-			(*OutString) += "\tscratch = " + ConvertCSValuetoSourceString(Op.Value1) + " + " + ConvertCSValuetoSourceString(Op.Value2) + ";\n";
+			auto Repr1 = ConvertCSValuetoSourceString(Op.Value1);
+			auto Repr2 = ConvertCSValuetoSourceString(Op.Value2);
+
+			(*OutString) += StringStackBuffer<256>("\tscratch%d = %s + %s;\n", Op.RegIndex, Repr1.c_str(), Repr2.c_str()).buffer;
 		}
 		else if (Op.Type == GLCSOperationType::Mul)
 		{
-			(*OutString) += "\tscratch = " + ConvertCSValuetoSourceString(Op.Value1) + " * " + ConvertCSValuetoSourceString(Op.Value2) + ";\n";
+			auto Repr1 = ConvertCSValuetoSourceString(Op.Value1);
+			auto Repr2 = ConvertCSValuetoSourceString(Op.Value2);
+
+			(*OutString) += StringStackBuffer<256>("\tscratch%d = %s * %s;\n", Op.RegIndex, Repr1.c_str(), Repr2.c_str()).buffer;
 		}
 		else if (Op.Type == GLCSOperationType::Sub)
 		{
-			(*OutString) += "\tscratch = " + ConvertCSValuetoSourceString(Op.Value1) + " - " + ConvertCSValuetoSourceString(Op.Value2) + ";\n";
+			auto Repr1 = ConvertCSValuetoSourceString(Op.Value1);
+			auto Repr2 = ConvertCSValuetoSourceString(Op.Value2);
+
+			(*OutString) += StringStackBuffer<256>("\tscratch%d = %s - %s;\n", Op.RegIndex, Repr1.c_str(), Repr2.c_str()).buffer;
 		}
 		else if (Op.Type == GLCSOperationType::Mov)
 		{
 			// Only really used at the end (and maybe the begining, idk)
-			(*OutString) += "\tscratch = " + ConvertCSValuetoSourceString(Op.Value1) + ";\n";
+			auto Repr1 = ConvertCSValuetoSourceString(Op.Value1);
+
+			(*OutString) += StringStackBuffer<256>("\tscratch%d = %s;\n", Op.RegIndex, Repr1.c_str()).buffer;
 		}
 		else if (Op.Type == GLCSOperationType::BeginIf)
 		{
@@ -377,10 +432,9 @@ void ConvertCSOperationsToComputeShaderSource(const std::vector<GLCSOperation>& 
 		}
 		else if (Op.Type == GLCSOperationType::WriteToOutput)
 		{
-			(*OutString) += "\timageStore(outImg, pxCoords, scratch);\n";
+			(*OutString) += StringStackBuffer<256>("\timageStore(outImg, pxCoords, scratch%d);\n", Op.RegIndex).buffer;
 			(*OutString) += "\tmemoryBarrier();\n";
 			(*OutString) += "\tbarrier();\n";
-			// TODO: Barriers
 		}
 	}
 
@@ -506,7 +560,7 @@ void RunComputeShaderSource(const std::string& ShaderSource, GLuint InputImageID
 
 struct EmulatedGLCSThreadState
 {
-	Vec4f Scratch;
+	Vec4f Scratch[MAX_SCRATCH_REGISTER_COUNT];
 
 	// If this is 0, the thread is active
 	// If this is >0, the thread is inactive
@@ -625,7 +679,7 @@ void RunEmulatedComputeShader(const std::vector<GLCSOperation>& OPs, const unsig
 		if (Value.Type == GLCSValueType::ReadFromInput)
 		{
 			// sample from round(frac(scratch.QQ) * imageWH)
-			return ReadFromInputImage(ThreadState->Scratch.xyzw[Value.Index1], ThreadState->Scratch.xyzw[Value.Index2]);
+			return ReadFromInputImage(ThreadState->Scratch[Value.RegIndex].xyzw[Value.Index1], ThreadState->Scratch[Value.RegIndex].xyzw[Value.Index2]);
 		}
 		else if (Value.Type == GLCSValueType::ReadFromOutput)
 		{
@@ -634,7 +688,7 @@ void RunEmulatedComputeShader(const std::vector<GLCSOperation>& OPs, const unsig
 			// ivec2 work_group_start_coords = ivec2(gl_GlobalInvocationID.x - gl_LocalInvocationID.x, gl_GlobalInvocationID.y - gl_LocalInvocationID.y);
 			// return work_group_start_coords + local_coords;
 
-			return ReadFromOutputImage(pxX, pxY, ThreadState->Scratch.xyzw[Value.Index1], ThreadState->Scratch.xyzw[Value.Index2]);
+			return ReadFromOutputImage(pxX, pxY, ThreadState->Scratch[Value.RegIndex].xyzw[Value.Index1], ThreadState->Scratch[Value.RegIndex].xyzw[Value.Index2]);
 		}
 		else if (Value.Type == GLCSValueType::ReadFromOutputFixed)
 		{
@@ -642,7 +696,7 @@ void RunEmulatedComputeShader(const std::vector<GLCSOperation>& OPs, const unsig
 		}
 		else if (Value.Type == GLCSValueType::Scratch)
 		{
-			return ThreadState->Scratch;
+			return ThreadState->Scratch[Value.RegIndex];
 		}
 		else if (Value.Type == GLCSValueType::VecLiteral)
 		{
@@ -659,10 +713,13 @@ void RunEmulatedComputeShader(const std::vector<GLCSOperation>& OPs, const unsig
 	{
 		for (int i = 0; i < ImgWidth; i++)
 		{
-			int Index = j * ImgWidth + i;
-			for (int k = 0; k < 4; k++)
+			for (int RegIndex = 0; RegIndex < MAX_SCRATCH_REGISTER_COUNT; RegIndex++)
 			{
-				ThreadStates[Index].Scratch.xyzw[k] = (double)(InputBuffer[Index * 4 + k]) / 255.0;
+				int Index = j * ImgWidth + i;
+				for (int k = 0; k < 4; k++)
+				{
+					ThreadStates[Index].Scratch[RegIndex].xyzw[k] = (double)(InputBuffer[Index * 4 + k]) / 255.0;
+				}
 			}
 		}
 	}
@@ -697,24 +754,24 @@ void RunEmulatedComputeShader(const std::vector<GLCSOperation>& OPs, const unsig
 					{
 						Vec4f Val1 = EvaluateCSValue(OP.Value1, i, j);
 						Vec4f Val2 = EvaluateCSValue(OP.Value2, i, j);
-						ThreadStates[Index].Scratch = Val1 + Val2;
+						ThreadStates[Index].Scratch[OP.RegIndex] = Val1 + Val2;
 					}
 					else if (OP.Type == GLCSOperationType::Mul)
 					{
 						Vec4f Val1 = EvaluateCSValue(OP.Value1, i, j);
 						Vec4f Val2 = EvaluateCSValue(OP.Value2, i, j);
-						ThreadStates[Index].Scratch = Val1 * Val2;
+						ThreadStates[Index].Scratch[OP.RegIndex] = Val1 * Val2;
 					}
 					else if (OP.Type == GLCSOperationType::Sub)
 					{
 						Vec4f Val1 = EvaluateCSValue(OP.Value1, i, j);
 						Vec4f Val2 = EvaluateCSValue(OP.Value2, i, j);
-						ThreadStates[Index].Scratch = Val1 - Val2;
+						ThreadStates[Index].Scratch[OP.RegIndex] = Val1 - Val2;
 					}
 					else if (OP.Type == GLCSOperationType::Mov)
 					{
 						Vec4f Val1 = EvaluateCSValue(OP.Value1, i, j);
-						ThreadStates[Index].Scratch = Val1;
+						ThreadStates[Index].Scratch[OP.RegIndex] = Val1;
 					}
 					else if (OP.Type == GLCSOperationType::BeginIf)
 					{
@@ -739,7 +796,7 @@ void RunEmulatedComputeShader(const std::vector<GLCSOperation>& OPs, const unsig
 					}
 					else if (OP.Type == GLCSOperationType::WriteToOutput)
 					{
-						WriteOutputImageFixed(ThreadStates[Index].Scratch, i, j);
+						WriteOutputImageFixed(ThreadStates[Index].Scratch[OP.RegIndex], i, j);
 					}
 					else
 					{
