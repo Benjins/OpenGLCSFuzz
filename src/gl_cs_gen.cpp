@@ -799,7 +799,7 @@ void ComputeDiffStats(const float* EmulatedVsActualDiffBufferCPU, DiffStats* DS,
 
 		float DiffMag = PixelDiff.Magnitude();
 		DS->TotalPixelErr += DiffMag;
-		if (DiffMag > 0)
+		if (DiffMag > 0.00001f)
 		{
 			DS->TotalDifferentPixels++;
 		}

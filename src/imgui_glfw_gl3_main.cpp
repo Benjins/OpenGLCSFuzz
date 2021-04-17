@@ -185,6 +185,8 @@ struct DiffStats
 // TODO: Header-ify
 #include "gl_cs_gen.cpp"
 
+#include <unordered_set>
+
 struct AppContext
 {
 	std::string G_SourceBufferForDisplay = "";
@@ -206,6 +208,9 @@ struct AppContext
 	float* EmulatedVsActualDiffBufferCPU = nullptr;
 
 	bool ContinuousFuzz = false;
+
+	std::vector<int> BadRNGSeeds;
+	std::unordered_set<int> BadRNGSeedsSet;
 
 	int NumCasesDone = 0;
 	int NumCasesDifferent = 0;
@@ -233,8 +238,6 @@ void MainAppUpdate() {
 
 	// Show images of the results, the code (maybe), and stats (how many run, how fast, etc.), also highlight diffs, maybe save, pause, idk
 
-	ImGui::Text("Yooooo...");
-
 	ImGui::DragInt("Seed", &AC.RNGSeed);
 
 	ImGui::Checkbox("Continuous Fuzz", &AC.ContinuousFuzz);
@@ -259,10 +262,6 @@ void MainAppUpdate() {
 		GenerateGLCSOperations(&MT64, &Ops);
 		ConvertCSOperationsToComputeShaderSource(Ops, &AC.G_SourceBufferForDisplay);
 
-		OutputDebugStringA("\n------------\n");
-		OutputDebugStringA(AC.G_SourceBufferForDisplay.data());
-		OutputDebugStringA("\n------------\n");
-
 		WriteRandomBytesToInputImage(AC.InputImageID, 256, 256, &MT64, AC.InputImgBufferCPU);
 
 		RunComputeShaderSource(AC.G_SourceBufferForDisplay, AC.InputImageID, AC.OutputImageID, 256, 256);
@@ -279,7 +278,23 @@ void MainAppUpdate() {
 
 		if (AC.DiffStats.TotalDifferentPixels > 0)
 		{
-			AC.NumCasesDifferent++;
+			if (AC.BadRNGSeedsSet.count(AC.RNGSeed) == 0)
+			{
+				AC.NumCasesDifferent++;
+
+				AC.BadRNGSeeds.push_back(AC.RNGSeed);
+				OutputDebugStringA("\n=====--------\n");
+
+				char Buff[256] = {};
+				snprintf(Buff, sizeof(Buff), "Found diff with RNG Seed: %d\n", AC.RNGSeed);
+				OutputDebugStringA(Buff);
+				OutputDebugStringA("-----\n");
+
+				OutputDebugStringA(AC.G_SourceBufferForDisplay.data());
+				OutputDebugStringA("\n=====--------\n");
+
+				AC.BadRNGSeedsSet.insert(AC.RNGSeed);
+			}
 		}
 	}
 
@@ -301,6 +316,30 @@ void MainAppUpdate() {
 	ImGui::Text("Number of cases: %4d", AC.NumCasesDone);
 	ImGui::Text("Number of diff fails: %4d", AC.NumCasesDifferent);
 
-	ImGui::TextUnformatted(AC.G_SourceBufferForDisplay.data());
+
+	if (ImGui::TreeNode("Bad Seeds"))
+	{
+		for (int RNGSeed : AC.BadRNGSeeds)
+		{
+			char Buff[256] = {};
+			snprintf(Buff, sizeof(Buff), "X##%d", RNGSeed);
+			if (ImGui::Button(Buff))
+			{
+				AC.RNGSeed = RNGSeed;
+			}
+
+			ImGui::SameLine();
+			ImGui::Text("Bad Seed: %d", RNGSeed);
+		}
+
+		ImGui::TreePop();
+	}
+
+	if (ImGui::TreeNode("Current Shader Source"))
+	{
+		ImGui::TextUnformatted(AC.G_SourceBufferForDisplay.data());
+
+		ImGui::TreePop();
+	}
 }
 
