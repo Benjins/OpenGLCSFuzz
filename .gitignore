@@ -1,0 +1,10 @@
+.vs/
+x64/
+imgui.ini
+
+*.vcxproj.filters
+*.vcxproj.user
+
+
+
+
