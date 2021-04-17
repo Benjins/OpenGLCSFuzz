@@ -191,7 +191,7 @@ struct AppContext
 {
 	std::string G_SourceBufferForDisplay = "";
 
-	int RNGSeed = 0;
+	uint64_t RNGSeed = 0;
 
 	bool bHasMadeTextures = false;
 	GLuint InputImageID;
@@ -209,8 +209,10 @@ struct AppContext
 
 	bool ContinuousFuzz = false;
 
-	std::vector<int> BadRNGSeeds;
-	std::unordered_set<int> BadRNGSeedsSet;
+	bool ReRunOnNextFrame = false;
+
+	std::vector<uint64_t> BadRNGSeeds;
+	std::unordered_set<uint64_t> BadRNGSeedsSet;
 
 	int NumCasesDone = 0;
 	int NumCasesDifferent = 0;
@@ -238,7 +240,7 @@ void MainAppUpdate() {
 
 	// Show images of the results, the code (maybe), and stats (how many run, how fast, etc.), also highlight diffs, maybe save, pause, idk
 
-	ImGui::DragInt("Seed", &AC.RNGSeed);
+	ImGui::InputScalar("Seed", ImGuiDataType_U64, &AC.RNGSeed);
 
 	ImGui::Text("WARNING: Running 'Continuous Fuzz' may lead to rapidly changing noise patterns (probably ~20-30 Hz, but up to your monitor's refresh rate).");
 	ImGui::Text("You can hit 'Single Fuzz' a couple times to see what the output is like");
@@ -246,16 +248,35 @@ void MainAppUpdate() {
 
 	bool bShouldRegenerateSource = false;
 
-	if (ImGui::Button("Single Fuzz") || AC.ContinuousFuzz)
+	if (AC.ContinuousFuzz)
 	{
 		bShouldRegenerateSource = true;
 
 		std::random_device rd;
 		AC.RNGSeed = rd();
+		AC.RNGSeed <<= 30;
+		AC.RNGSeed += rd();
 	}
 
-	// Wonky order, but that's because otherwise Button would be skipped if bShouldRegenerateSource was already true
-	bShouldRegenerateSource = ImGui::Button("Regenerate Source") || bShouldRegenerateSource;
+	if (ImGui::Button("Single Fuzz"))
+	{
+		bShouldRegenerateSource = true;
+
+		std::random_device rd;
+		AC.RNGSeed = rd();
+		AC.RNGSeed <<= 30;
+		AC.RNGSeed += rd();
+	}
+
+	if (AC.ReRunOnNextFrame)
+	{
+		bShouldRegenerateSource = true;
+	}
+
+	if (ImGui::Button("Regenerate Source"))
+	{
+		bShouldRegenerateSource = true;
+	}
 
 	if (bShouldRegenerateSource)
 	{
@@ -288,7 +309,7 @@ void MainAppUpdate() {
 				OutputDebugStringA("\n=====--------\n");
 
 				char Buff[256] = {};
-				snprintf(Buff, sizeof(Buff), "Found diff with RNG Seed: %d\n", AC.RNGSeed);
+				snprintf(Buff, sizeof(Buff), "Found diff with RNG Seed: %llu\n", AC.RNGSeed);
 				OutputDebugStringA(Buff);
 				OutputDebugStringA("-----\n");
 
@@ -319,19 +340,22 @@ void MainAppUpdate() {
 	ImGui::Text("Number of diff fails: %4d", AC.NumCasesDifferent);
 
 
+	AC.ReRunOnNextFrame = false;
+
 	if (ImGui::TreeNode("Bad Seeds"))
 	{
-		for (int RNGSeed : AC.BadRNGSeeds)
+		for (uint64_t RNGSeed : AC.BadRNGSeeds)
 		{
 			char Buff[256] = {};
-			snprintf(Buff, sizeof(Buff), "X##%d", RNGSeed);
+			snprintf(Buff, sizeof(Buff), "REPRO##%llu", RNGSeed);
 			if (ImGui::Button(Buff))
 			{
 				AC.RNGSeed = RNGSeed;
+				AC.ReRunOnNextFrame = true;
 			}
 
 			ImGui::SameLine();
-			ImGui::Text("Bad Seed: %d", RNGSeed);
+			ImGui::Text("Bad Seed: %llu", RNGSeed);
 		}
 
 		ImGui::TreePop();
